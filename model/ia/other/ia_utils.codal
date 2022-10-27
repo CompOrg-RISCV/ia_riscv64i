@@ -125,6 +125,7 @@ uint_<WORD_W> load(const uint32 opc, const uint_<ADDR_W> address) //?? Changed a
         case ITYPE_LBU:                         // Unsigned byte and halfword loads do not
         case ITYPE_LHU:                         // require sign extension and can result in         //These cases need to change for 64 bit machine
         case ITYPE_LW:                          // immediate return
+        case ITYPE_LD:
             return result;
         default:
             byte_count = 0;
