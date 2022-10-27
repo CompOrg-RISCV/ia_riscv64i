@@ -1,0 +1,151 @@
+/**
+ * Codasip s.r.o.
+ *
+ * CONFIDENTIAL
+ *
+ * Copyright 2022 Codasip s.r.o.
+ *
+ * All Rights Reserved.
+ *
+ * NOTICE: All information contained in this file, is and shall remain the property of
+ * Codasip s.r.o. and its suppliers, if any.
+ *
+ * The intellectual and technical concepts contained herein are confidential and proprietary to
+ * Codasip s.r.o. and are protected by trade secret and copyright law.  In addition, elements of the
+ * technical concepts may be patent pending.
+ *
+ * This file is part of the Codasip Studio product. No part of the Studio product, including this
+ * file, may be use, copied, modified, or distributed except in accordance with the terms contained
+ * in Codasip license agreement under which you obtained this file.
+ *
+ *  \file   ca_pipe4_me.codal
+ *  \author Codasip
+ *  \date   09.02.2022
+ *  \brief  cycle accurate model
+ */
+
+#include "ca_defines.hcodal"
+#include "config.hcodal"
+
+// -------------------------------------------------------------------------------------------------
+// Memory Stage
+// -------------------------------------------------------------------------------------------------
+event me : pipeline(pipe.MEMWB)
+{
+    use me_output;
+    use branch_logic;
+
+    semantics
+    {
+        uint32 load_data, load_data_decoded;
+        bool data_cache_ready, data_cache_response;
+
+        // read data off the memory bus
+#ifdef OPTION_CACHES_ENABLED
+        idcache.if_dcache.transport(CP_PHS_DATA, data_cache_ready, data_cache_response, load_data, r_exmem_mem_encodeddata);
+        load_data_decoded = idcache.if_dcache.decode_data(load_data, r_exmem_alu_result, r_exmem_mem_size);
+#else
+        ldst.transport(CP_PHS_DATA, data_cache_ready, data_cache_response, load_data, r_exmem_mem_encodeddata);
+        load_data_decoded = ldst.decode_data(load_data, r_exmem_alu_result, r_exmem_mem_size);
+#endif
+
+        if (!data_cache_ready & !data_cache_response) {
+            s_me_mem_busy = true;
+        }
+
+        switch (r_exmem_mem_ops) {
+            case MEM_NOP:
+                s_me_mem_result = 0;
+                s_syscall_pending = false;
+                break;
+            case MEM_LW:
+                s_me_mem_result = load_data_decoded;
+                s_syscall_pending = false;
+                break;
+            case MEM_LH:
+                s_me_mem_result = (int32)(int16) load_data_decoded;
+                s_syscall_pending = false;
+                break;
+            case MEM_LHU:
+                s_me_mem_result = (uint32) (uint16)load_data_decoded;
+                s_syscall_pending = false;
+                break;
+            case MEM_LB:
+                s_me_mem_result = (int32)(int8) load_data_decoded;
+                s_syscall_pending = false;
+                break;
+            case MEM_LBU:
+                s_me_mem_result = (uint32)(uint8) load_data_decoded;
+                s_syscall_pending = false;
+                break;
+            case MEM_SW:
+                if (r_exmem_alu_result == SYSCALL_ADDRESS && (data_cache_ready && !data_cache_response))
+                {
+                    if (r_exmem_mem_encodeddata == 1)
+                    {
+                       #pragma simulator
+                       {
+                               codasip_store_exit_code(rf_xpr[FUNCTION_REG] & 0xFFFF);
+                       }
+                               codasip_halt();
+                    }else
+                    {
+                        #pragma simulator
+                        {
+                            s_syscall_pending = true;
+                        }
+                    }
+                }
+                break;
+            default:
+                s_me_mem_result = 0;
+                s_syscall_pending = false;
+                break;
+        }
+
+        #pragma simulator
+        {
+            if (s_syscall_pending) {
+                if (r_syscall_delay == 1) {
+                    codasip_syscall(r_exmem_mem_encodeddata);
+                    r_syscall_delay = 0;
+                    s_syscall_stall = false;
+                    r_syscall_delay = 0;
+                } else {
+                    s_syscall_stall = true;
+                    r_syscall_delay++;
+                }
+            } else {
+                s_syscall_stall = false;
+            }
+        }
+
+        branch_logic();
+
+        // Update the pipeline registers between the Memory (MEM) and Write Back (WB) stages
+        me_output();
+    };
+};
+
+event branch_logic : pipeline(pipe.MEMWB)
+{
+    semantics
+    {
+        s_me_take_branch = (r_exmem_branch_inst & r_exmem_branch_true) || r_exmem_jump_inst;
+    };
+};
+
+event me_output : pipeline(pipe.MEMWB)
+{
+    semantics
+    {
+        // Update data result for the MEMWB pipeline to store into Register File (RF) if
+        // r_memwb_regwrite is true
+        if(r_exmem_memread) r_memwb_data_result = s_me_mem_result;
+        else r_memwb_data_result = r_exmem_alu_result;
+
+        // Passing control signals to the next stage, WB, through the MEMWB pipeline register
+        r_memwb_rd = r_exmem_rd;
+        r_memwb_regwrite = r_exmem_regwrite;
+    };
+};
